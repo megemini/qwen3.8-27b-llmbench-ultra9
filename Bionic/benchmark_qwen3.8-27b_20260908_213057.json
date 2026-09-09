@@ -1,0 +1,175 @@
+{
+  "benchmark_id": "879ca6a2-fbcd-4c72-814a-d9efeaf56891",
+  "model_name": "qwen3.8-27b",
+  "network_latency_ms": 58.02769660949707,
+  "system_info": {
+    "platform": "Windows",
+    "platform_release": "11",
+    "python": "3.13.15",
+    "cpu": {
+      "cores": 16,
+      "model": 2900.0,
+      "percent": 0.0
+    },
+    "memory": {
+      "total_bytes": 68208267264,
+      "available_bytes": 59775594496,
+      "used_percent": 12.4
+    },
+    "gpu": null
+  },
+  "server_info": {
+    "framework": null,
+    "version": null,
+    "model": null,
+    "context_size": null,
+    "parallel_slots": null,
+    "kv_cache_usage_perc": null,
+    "num_requests_running": null,
+    "num_requests_waiting": null,
+    "num_requests_swapped": null,
+    "prefix_cache_hits": null,
+    "prefix_cache_queries": null,
+    "prefix_cache_hit_ratio": null,
+    "cache_config": {},
+    "probed_endpoints": [
+      "/metrics",
+      "/props",
+      "/api/version",
+      "/version",
+      "/"
+    ],
+    "metrics_available": true
+  },
+  "config": {
+    "base_url": "http://localhost:1234/v1",
+    "api_key_set": false,
+    "api_version": null,
+    "model": "qwen3.8-27b",
+    "prompt_source": "presets (short/medium/long)",
+    "prompt": null,
+    "prompt_lengths": [],
+    "concurrency": "1",
+    "concurrency_levels": [
+      1
+    ],
+    "max_tokens": 512,
+    "runs": 3,
+    "no_verify_tls": false,
+    "command": "llmbench -u http://localhost:1234/v1 -m qwen3.8-27b -c 1 -t 512 --runs 3"
+  },
+  "timestamp": "2026-09-08T21:30:57.347659",
+  "prompts": [
+    {
+      "label": "short",
+      "target_tokens": 10,
+      "actual_tokens": 92,
+      "prompt_preview": "Explain the concept of gradient descent in machine learning.",
+      "results": [
+        {
+          "concurrency": 1,
+          "runs": 3,
+          "generation_throughput": 2.1103221532658214,
+          "generation_throughput_median": 2.1103221532658214,
+          "generation_throughput_mean": 2.0908745567711713,
+          "prompt_throughput": 39.49283901826826,
+          "prompt_throughput_mean": 27.987162267992957,
+          "prompt_throughput_median": 22.61391162040778,
+          "decode_throughput": 2.1619328052379925,
+          "decode_throughput_median": 2.1601520401130787,
+          "min_ttft": 2.387563943862915,
+          "max_ttft": 2.387563943862915,
+          "avg_ttft": 2.387563943862915,
+          "ttft_mean": 3.593841791152954,
+          "ttft_median": 4.126319885253906,
+          "ttft_p95": 4.267641544342041,
+          "itl_mean_ms": 470.24606147745095,
+          "itl_median_ms": 0.40340423583984375,
+          "itl_p95_ms": 1241.5869235992432,
+          "cached_prompt_tokens": 0,
+          "cache_hit_ratio": 0.0,
+          "success_rate": 1.0,
+          "success_rate_mean": 1.0,
+          "duration": 124.20968842506409,
+          "total_completion_tokens": 262,
+          "total_prompt_tokens": 92,
+          "server_metrics": {}
+        }
+      ]
+    },
+    {
+      "label": "medium",
+      "target_tokens": 1000,
+      "actual_tokens": 1281,
+      "prompt_preview": "The following is a technical document about distributed syst",
+      "results": [
+        {
+          "concurrency": 1,
+          "runs": 3,
+          "generation_throughput": 1.8837121716473086,
+          "generation_throughput_median": 1.8219199971942608,
+          "generation_throughput_mean": 1.8181542723903619,
+          "prompt_throughput": 445.6841465864502,
+          "prompt_throughput_mean": 472.1716686254195,
+          "prompt_throughput_median": 484.21010709301527,
+          "decode_throughput": 1.8363059454922062,
+          "decode_throughput_median": 1.8395314164206924,
+          "min_ttft": 2.932260513305664,
+          "max_ttft": 2.932260513305664,
+          "avg_ttft": 2.932260513305664,
+          "ttft_mean": 2.7754339377085366,
+          "ttft_median": 2.70357346534729,
+          "ttft_p95": 2.932260513305664,
+          "itl_mean_ms": 546.2750349648234,
+          "itl_median_ms": 0.4723072052001953,
+          "itl_p95_ms": 1271.270751953125,
+          "cached_prompt_tokens": 0,
+          "cache_hit_ratio": 0.0,
+          "success_rate": 1.0,
+          "success_rate_mean": 1.0,
+          "duration": 271.8617606163025,
+          "total_completion_tokens": 512,
+          "total_prompt_tokens": 1281,
+          "server_metrics": {}
+        }
+      ]
+    },
+    {
+      "label": "long",
+      "target_tokens": 10000,
+      "actual_tokens": 9458,
+      "prompt_preview": "The following passage discusses several topics in computer s",
+      "results": [
+        {
+          "concurrency": 1,
+          "runs": 3,
+          "generation_throughput": 1.8361733784072425,
+          "generation_throughput_median": 1.8366639444294763,
+          "generation_throughput_mean": 1.8829653663592885,
+          "prompt_throughput": 3443.855483405694,
+          "prompt_throughput_mean": 3242.5260175379944,
+          "prompt_throughput_median": 3172.4061140867143,
+          "decode_throughput": 1.9085467809112784,
+          "decode_throughput_median": 1.8664924362343573,
+          "min_ttft": 2.804368257522583,
+          "max_ttft": 2.804368257522583,
+          "avg_ttft": 2.804368257522583,
+          "ttft_mean": 2.9805425802866616,
+          "ttft_median": 3.039361000061035,
+          "ttft_p95": 3.097898483276367,
+          "itl_mean_ms": 526.9148631241286,
+          "itl_median_ms": 0.35762786865234375,
+          "itl_p95_ms": 1357.309103012085,
+          "cached_prompt_tokens": 0,
+          "cache_hit_ratio": 0.0,
+          "success_rate": 1.0,
+          "success_rate_mean": 1.0,
+          "duration": 172.69967675209045,
+          "total_completion_tokens": 317,
+          "total_prompt_tokens": 9458,
+          "server_metrics": {}
+        }
+      ]
+    }
+  ]
+}

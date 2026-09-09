@@ -1,0 +1,24 @@
+# Test
+benchmark_id,4117386c-1a6a-47c1-9d35-905b394f7e98
+model_name,OpenVINO/Qwen3.8-27B-int4-ov
+network_latency_ms,52.4575
+timestamp,2026-09-08T22:09:57.130497
+config_base_url,http://localhost:8000/v1
+config_prompt_source,presets (short/medium/long)
+config_concurrency,1
+config_max_tokens,512
+config_runs,3
+config_no_verify_tls,False
+config_command,llmbench -u http://localhost:8000/v1 -c 1 -t 512 --runs 3
+# System
+Platform,Windows 11
+Python,3.13.15
+CPU,2900.0
+CPU cores,16
+Memory,63.5 GB (36% used)
+# Server
+
+prompt_label,target_tokens,actual_tokens,concurrency,runs,generation_throughput_mean,generation_throughput_median,prompt_throughput_mean,decode_throughput_mean,min_ttft,ttft_mean,ttft_median,ttft_p95,itl_median_ms,itl_p95_ms,cached_tokens,cache_hit_ratio,success_rate_mean,duration,total_completion_tokens,total_prompt_tokens,peak_kv_cache_usage_perc,peak_num_requests_waiting
+short,10,92,1,3,4.9497,4.9453,128.9566,5.0298,0.6184,0.7880,0.8707,0.8748,201.1280,468.0851,0,0.0000,1.0000,100.2131,497,92,,
+medium,1000,1281,1,3,4.8187,4.7677,931.5445,4.9547,0.6456,2.9402,4.0775,4.0975,202.9399,440.2153,0,0.0000,1.0000,104.0733,512,1281,,
+long,10000,9458,1,3,4.6355,4.5536,4327.9369,4.8500,0.9760,4.9577,6.9268,6.9703,207.3977,552.6285,0,0.0000,1.0000,106.6449,512,9458,,
