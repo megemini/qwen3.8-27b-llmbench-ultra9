@@ -20,7 +20,7 @@
 |---|---|---|
 | 1 | Herdsman 的 prefill 高达 3750 tok/s，全场最快 | 它的 prompt token **92–100% 来自 prefix cache**，测的是缓存回放速度，不是真实算力 |
 | 2 | Herdsman 界面写着 "Engine: llama.cpp" | HTTP 层自报 **ollama v0.6.4**，调度 / 缓存 / 内存策略都由 ollama 决定 |
-| 3 | Bionic 的 prefill 3172 tok/s 也是全场第一 | 这个是真的（Cache% = 0），但代价是 decode 垫底 + 输出最卡 |
+| 3 | Bionic 的 prefill 3172 tok/s 也是全场第一 | 这个是真实（无缓存）口径的第一（Cache% = 0），但代价是 decode 垫底 + 输出最卡 |
 | 4 | 各家平均解码速度差 2 倍 | 加上 ITL 后，体感差距还要再放大一倍：Bionic 的 ITL p95 达 **1357 ms** |
 
 > 说明：后续升级了 llmbench 工具，添加了 Cache% 和 ITL 的采集。
@@ -41,7 +41,7 @@
 1. **Herdsman 的 prefill 数字"含金量"存疑。** `Cache%` 显示它的 prompt token **92.3% / 99.7% / 99.96% 来自服务端 prefix cache** —— 也就是说它那漂亮的 3750 tok/s prefill（多轮中位数口径，下同），测的是"缓存回放"而非"真实 prefill 算力"。其余几家 cache 全为 0%。这与 §10.1 的算力上限校验（roofline）结论一致：按 dense 27B 计算它需要 202 TFLOPS（2×27B×3750 tok/s），而本平台 Intel Arc 140T 核显的 INT8 峰值只有 77 TOPS（≈19 TFLOPS FP32，Intel 官方 spec），平台含 CPU/NPU 合计也不过 ~99 TOPS。
 2. **只有 OVMS 和 unsloth 在真正"流式"输出。** ITL **均值/中位数**比值：unsloth 1.05、OVMS 1.09（接近 1 = 平滑）；而 **Bionic 1166、Herdsman 921** —— 后两者是把攒够一批 token 再一次性刷给客户端，实际体感是"卡一下、吐一串"。Bionic 的 ITL p95 高达 **1357 ms**。
 3. **Herdsman 在内存超配状态下跑完了全程。** 启动前它自己弹出告警："预估需要 43.5 GB，当前可用 39.3 GB，不足，继续可能导致启动失败和系统崩溃"。这解释了它为什么长上下文 decode 掉速 **-14.8%**（四家最差）。
-4. **OVMS 的快有前提：要命中加速设备。** 追加的 OVMS-CPU 对照（显式锁定 CPU）显示：decode 掉到 2.5 tok/s、prefill 崩到 **5–6 tok/s（无批处理）**、**long 档（9.46k token）未完成（首轮即超时中断，无轮次数据）**。OVMS 默认设备的 5 tok/s / 871 ms TTFT 应主要归功于加速设备 —— **已核实：除 OVMS-CPU 外，四组（OVMS 默认设备 / Bionic / Herdsman / Unsloth）全部运行在 Arc 140T 核显上**。
+4. **OVMS 的快有前提：要命中加速设备。** 追加的 OVMS-CPU 对照（显式锁定 CPU）显示：decode 掉到 2.5 tok/s、prefill 后续轮次退化到 **5–6 tok/s（首轮仍有 ~1000 tok/s，见 §6.5）**、**long 档（9.46k token）未完成（首轮即超时中断，无轮次数据）**。OVMS 默认设备的 5 tok/s / 871 ms TTFT 应主要归功于加速设备 —— **已核实：除 OVMS-CPU 外，四组（OVMS 默认设备 / Bionic / Herdsman / Unsloth）全部运行在 Arc 140T 核显上**。
 
 ---
 
@@ -51,7 +51,7 @@
 
 现在 `小模型` 的能力越来越强，是否可以脱离云端的服务，完全将 Agent 运行在本地？
 
-前端时间发布的 Qwen3.8-27B 是一个 27B 级别的模型，云端体验的感觉是 `嘎嘎乱杀`，很多基础的能力完全可以交给这个小模型了，那么，在本地部署的感觉如何？刚好，手上有一台 NucBox EVO-T1（Ultra 9 285H + 64 GB，无独显），它能不能跑得动、能跑多快：
+前段时间发布的 Qwen3.8-27B 是一个 27B 级别的模型，云端体验的感觉是 `嘎嘎乱杀`，很多基础的能力完全可以交给这个小模型了，那么，在本地部署的感觉如何？刚好，手上有一台 NucBox EVO-T1（Ultra 9 285H + 64 GB，无独显），它能不能跑得动、能跑多快：
 
 - 量化格式走 GGUF 还是 OpenVINO IR？
 - 权重放 CPU 内存，还是 offload 到 Arc 140T 核显？
@@ -84,7 +84,7 @@
 |---|---|---|
 | 并发 | `c = 1` | 只测单路延迟 |
 | 输出上限 | `t = 512` | |
-| 重复轮数 | `--runs 3` | 三轮**串行**执行（`asyncio.gather` 逐轮）。正文取值口径：**Dec TPS / prefill TPS 为多轮聚合值**（Dec 取 `decode_throughput`——CSV 中 `dec_tps` 同源，无 `_mean` 后缀；prefill 取 `prompt_throughput_median`，见 §4.1 / §4.3），**TTFT 取中位数**并辅以 p95 |
+| 重复轮数 | `--runs 3` | 三轮**串行**执行（逐轮 await）。正文取值口径：**Dec TPS / prefill TPS 为多轮聚合值**（Dec 取 `decode_throughput`——CSV 中 `dec_tps` 同源，无 `_mean` 后缀；prefill 取 `prompt_throughput_median`，见 §4.1 / §4.3），**TTFT 取中位数**并辅以 p95 |
 | 采样 | `temperature = 1.0`，未固定 seed | 输出长度不固定 |
 | 接口 | OpenAI 兼容 `/v1/chat/completions`，`stream = true` | 四家统一 |
 
@@ -190,7 +190,7 @@
 | OVMS-CPU | 5.4 | 5.7 | **未完成** | 0% |
 
 > 📌 **口径说明**：本表（及全文正文）统一为 `prompt_throughput` 的**多轮中位数**（源码直接输出该字段）——对"第 1 轮快、后续轮次退化"的 OVMS / OVMS-CPU 最稳健。附录 A 贴的是 CSV 的 **mean 口径**，两者差异即轮间抖动（见 §7.6）；以 OVMS medium 为例，mean 931 tok/s 是被首轮的 0.65 s 拉高，median 只有 318。
-> ⭐ OVMS-CPU 的 prefill 只有 **~5–6 tok/s**，与 decode 的 2.5 tok/s 同一数量级（健康引擎的 prefill 通常是 decode 的几十倍）。说明 CPU 路径下 OVMS **没有做批处理 prefill**，长 prompt 每轮要跑几千步，最终超时未完成。
+> ⭐ OVMS-CPU 的 prefill **中位数只有 ~5–6 tok/s**（多轮中位数口径），与 decode 的 2.5 tok/s 同一数量级（健康引擎的 prefill 通常是 decode 的几十倍）。但需注意：这个中位数只反映**后续轮次**——其第 1 轮 prefill 实际达到 ~1000 tok/s（medium 档：mean 358 = (1063 + 5.7 + 5.7) / 3，min_ttft 仅 1.26 s，见 §7.6），说明 CPU 路径**首轮仍有批处理能力，从第 2 轮起退化到 ~5 tok/s**，退化原因待查；长 prompt 按退化后的速度每轮要跑几千步，最终超时未完成。
 
 ### 4.4 ITL（Inter-Token Latency）
 
@@ -239,7 +239,7 @@
 
 > 斜线填充的 Herdsman 柱子代表 **92–100% 的 prompt token 来自 prefix cache**，属于缓存回放而非真实算力，**不参与排名**。
 > 排除后：Bionic 真实 prefill 最快（9.46k 档 3172 tok/s），OVMS 次之（1376），unsloth 停留在 59 tok/s 且完全不随 prompt 变长提速。
-> ⭐ 近零高度的 OVMS-CPU 浅绿柱（5–6 tok/s，× = long 未完成）印证：CPU 上的 OVMS **完全没有批处理 prefill**，是四组里唯一既无缓存、又无批处理的 prefill。
+> ⭐ 近零高度的 OVMS-CPU 浅绿柱（多轮中位数 5–6 tok/s，× = long 未完成）反映的是退化后的后续轮次：其第 1 轮 prefill 实测 ~1000 tok/s（见 §4.3 注、§7.6）——CPU 路径首轮尚有批处理能力，后续轮次退化严重，退化原因待查。
 > 📌 图与正文均为 `prompt_throughput` **多轮中位数**口径；附录 A 的 CSV 行是 mean 口径，两者差异源自轮间抖动（§7.6）。
 
 ### 5.5 长上下文稳定性
@@ -276,7 +276,7 @@
 - **长 prompt prefill 只有 1376 tok/s**（多轮中位数），是 Bionic（3172）的 43%。
 - **TTFT 三轮之间抖动 7 倍**：long prompt 三轮分别为 **0.98 s / 6.93 s / 6.97 s**，第 1 轮明显偏快。`Cache% = 0` 排除了 prefix cache 解释；但"首轮偏快"同样见于 Bionic / Herdsman 的 short 档与 OVMS-CPU，并非 OVMS 独有（§7.6），因此"KV block 池回收 / 动态 shape 编译缓存"目前只是**待验证假设**，需抓 OVMS 日志确认。
 - 无投机解码 / MTP，decode 上限被单步前向延迟锁死。
-- 部署门槛最高
+- 部署门槛最高。
 ---
 
 ### 6.2 Herdsman（牧马人 v0.5.4-beta1）— 数字漂亮但有水分
@@ -325,7 +325,7 @@
 **缺点 / 卡点**
 - ❌ **prefill 恒定 59 tok/s，慢 23–54 倍**。9.46k prompt 的 TTFT 高达 **159.2 s**（2 分 39 秒）。
 - ❌ **prefill 吞吐不随 prompt 变长而提升**：53 / 78 / 59（其他三家是 23→3172、112→1376）。这是 **prefill 未被批处理** 的决定性指纹。
-- 根因判断：llama.cpp 构建过旧，或 ubatch size 过小，或走了未启用 VNNI/oneDNN 的 fallback GEMM。
+- 根因判断：llama.cpp 构建过旧，或 ubatch size 过小，或 Vulkan kernel 路径存在劣化（本组跑在 Vulkan 核显上）。
 
 ---
 
@@ -343,7 +343,7 @@
 
 **结论一：CPU 路径把 OVMS 的所有优势清零。** decode 从 5.0 掉到 **2.5 tok/s**——注意它仍**高于跑在核显上的 Bionic（1.91）**；short 的 TTFT 从 871 ms 涨到 **16.9 s**（约 19 倍）；medium 更是到 **224 s**（约 55 倍）。
 
-**结论二：CPU 路径没有批处理 prefill。** 默认设备的 prefill 随 prompt 变长而大幅提速（112→1376 tok/s，多轮中位数），说明它在按 token 批量喂 GPU；而 CPU 组恒定在 ~5 tok/s、完全不随 prompt 变长而提升（只比 decode 快约 1 倍，而健康引擎的 prefill 通常是 decode 的几十倍）——即每个 prompt token 仍是逐个处理的。9.46k 的 long prompt 按此速度需要 **~30 分钟** 才能出第一个字，实测首轮即超时中断（无轮次数据留下）。
+**结论二：CPU 路径的 prefill 首轮尚有批处理能力，但后续轮次严重退化。** 默认设备的 prefill 随 prompt 变长而大幅提速（112→1376 tok/s，多轮中位数），说明它在按 token 批量喂 GPU；CPU 组的第 1 轮同样如此（medium 档首轮 ~1063 tok/s、TTFT 仅 1.26 s；short 档首轮 ~79 tok/s），说明批处理能力在 CPU 上依然存在；但从第 2 轮起 prefill 退化到 **~5–6 tok/s**（多轮中位数被拉到这个量级，只比 decode 快约 1 倍，而健康引擎的 prefill 通常是 decode 的几十倍），退化原因（KV cache / 内存 / 调度）待查。9.46k 的 long prompt 若按退化后的速度，每轮需要 **~30 分钟** 才能出第一个字，实测首轮即超时中断（无轮次数据留下）。
 
 **结论三：设备选择 = OVMS 性能的生命线，这不是参数微调能救的。** 默认设备跑在加速路径（Arc 140T 核显）上是 5 tok/s 的 decode + 批量 prefill；锁到 CPU 后跌到 2.5 tok/s。对 OVMS 而言，"在什么设备上跑"远比"调什么参数"重要。
 
@@ -408,7 +408,7 @@
 
 ### 7.4 prefix cache：Herdsman 的"甜蜜陷阱"
 
-- llmbench 会先用完整 prompt 发一次探测请求（`probe_tokens`），Herdsman 借此**从第 1 轮就 100% 命中缓存**。
+- llmbench 会先用完整 prompt 发一次探测请求（`probe_tokens`），Herdsman 借此**从第 1 轮就命中缓存（92%+）**。
 - 对真实业务：如果工作负载是"长 system prompt + 多轮追问"，这个缓存是**真实的巨大优势**；如果是"每次都是全新长文档"，则完全用不上。
 - 其余三家 Cache% 全为 0 —— 但需要注意：**0% 可能是没开缓存，也可能是服务端不上报 `prompt_tokens_details.cached_tokens` 字段**。从 Bionic/unsloth 三轮 TTFT 毫无改善来看，更可能是前者。
 - 🔍 **一个一致的细节**：Herdsman 三档每轮都恰好漏缓存 ~12 个 prompt token（short：156 − 144 = 12；medium：3723 − 3711 = 12；long：28254 − 28242 = 12，即每轮约 4 个）——说明 ollama 是**固定复用前缀、但尾部 ~4 token 始终重算**。因此它的命中率永远到不了 100%（long 档 99.96%），正文用"92–100%"而不是"100%"是准确的。
@@ -436,6 +436,7 @@
 
 - 最显著的是 OVMS / OVMS-CPU（6–178×），但 **Bionic、Herdsman 的 short 档也出现首轮偏快（1.7–2.0×），而 Bionic 的 medium 档首轮反而最慢**——方向并不统一，说明它**不是某个引擎独有的稳定行为**，更可能是平台级/调度级的偶发因素（核显驱动节流、共享内存带宽竞争等）叠加。
 - **Unsloth 三轮完全一致**是强证据：抖动与"有没有做批处理/池化"无关。
+- OVMS-CPU 的 medium 档原始 JSON 显示第 1 轮 prefill 约 **1063 tok/s**（TTFT 仅 1.26 s），而三轮 mean 358 / median 5.7 —— 即"首轮正常、后续退化"在 prefill 上同样成立，且比 TTFT 的抖动更极端（§6.5 结论二）。
 
 ---
 
@@ -478,11 +479,11 @@
 
 | 引擎 | 首要卡点 | 次要卡点 | 可修复性 |
 |---|---|---|---|
-| **OVMS** | 长 prompt prefill 1376 tok/s（Bionic 的 43%，且依赖核显 offload） | TTFT 轮间抖动 7×（可复现）；无投机解码 | 🟡 prefill 靠调参改善；抖动需查 KV block 池；⚠️ 设备回退到 CPU 即跌档（§6.5） |
+| **OVMS** | 长 prompt prefill 1376 tok/s（Bionic 的 43%，且依赖核显 offload） | TTFT 轮间抖动 7×（成因待查，§7.6）；无投机解码 | 🟡 prefill 靠调参改善；抖动需查 KV block 池；⚠️ 设备回退到 CPU 即跌档（§6.5） |
 | **Herdsman** | **内存超配**（启动前自报需 43.5 GB / 可用 39.3 GB） | prefill 数字含 92–100% 缓存红利；输出攒批 | 🟢 已是 Q4_K_M（无需改档位）；换更小量化或加内存即可显著改善 |
 | **Bionic** | **iGPU Vulkan offload 拖死 decode**（1.91 tok/s，比纯 CPU 的 OVMS-CPU 2.51 还慢） | 输出攒批，ITL p95 1357 ms | 🟢 同为核显的 Unsloth 快 1.7–2.1 倍 → 属构建/配置问题：升级 llama.cpp 或调整 offload 层数（`-ngl`）可改善 |
 | **Unsloth** | **prefill 无批处理（59 tok/s）** | llama.cpp 构建过旧 | 🟢 升级构建 + `-b/-ub` 参数，预期数量级改善 |
-| **OVMS-CPU** ⭐ | **纯 CPU 跑 27B：prefill 无批处理（5 tok/s）+ decode 减半** | long 档未完成（首轮超时中断） | 🔴 非参数问题：改用核显（默认设备）即解决，见 §6.5 |
+| **OVMS-CPU** ⭐ | **纯 CPU 跑 27B：prefill 后续轮次退化至 ~5 tok/s（首轮 ~1000）+ decode 减半** | long 档未完成（首轮超时中断） | 🔴 非参数问题：改用核显（默认设备）即解决，见 §6.5 |
 
 ### 平台级瓶颈（与引擎无关）
 
@@ -504,7 +505,7 @@
 | **暂不推荐** | **Bionic** | 在本平台 iGPU offload 是负优化：decode 垫底（1.91）+ 输出最卡；同为核显的 Unsloth 快 2 倍，**纯 CPU 的 OVMS-CPU（2.51）都比它快** |
 | **长 prompt 场景避免** | **Unsloth / OVMS-CPU** | Unsloth 要等 159 s 才出第一个字；OVMS 锁 CPU 后 long 档不可用（首轮即超时中断） |
 
-> ⚠️ 上表中所有引擎默认都运行在**核显 Arc 140T** 上（**已核实**；唯 OVMS-CPU 为显式锁 CPU 的对照）。OVMS-CPU 对照证明：一旦回退到 CPU，decode 减半、prefill 崩到 5–6 tok/s、long 档不可用（§6.5）。部署时仍建议显式指定 `target_device=GPU`，避免服务重启后被自动回退到 CPU。
+> ⚠️ 上表中所有引擎默认都运行在**核显 Arc 140T** 上（**已核实**；唯 OVMS-CPU 为显式锁 CPU 的对照）。OVMS-CPU 对照证明：一旦回退到 CPU，decode 减半、prefill 后续轮次退化到 5–6 tok/s（首轮 ~1000）、long 档不可用（§6.5）。部署时仍建议显式指定 `target_device=GPU`，避免服务重启后被自动回退到 CPU。
 
 ### 端到端耗时参考（生成 512 tokens）
 
@@ -520,7 +521,7 @@
 
 **一句话总结**
 
-> **OVMS 是综合赢家** —— 它的 decode 最快、最稳、输出最平滑，短 prompt TTFT 唯一破 1 秒，且不靠任何缓存红利。**但赢的前提是跑在 Arc 140T 核显上**：显式锁 CPU 后 decode 减半、prefill 崩到 5–6 tok/s、long 档不可用（§6.5）。
+> **OVMS 是综合赢家** —— 它的 decode 最快、最稳、输出最平滑，短 prompt TTFT 唯一破 1 秒，且不靠任何缓存红利。**但赢的前提是跑在 Arc 140T 核显上**：显式锁 CPU 后 decode 减半、prefill 后续轮次退化到 5–6 tok/s（首轮 ~1000）、long 档不可用（§6.5）。
 > **Herdsman 的数字要打折扣看** —— 92–100% 的 prefix cache 命中让它的 prefill 数字失去可比性，而启动时的内存超配又在长上下文上把它拖了下来；但在"固定 system prompt 多轮对话"场景它依然是最优解。
 > **Bionic 和 Unsloth 是同一个镜像问题的两面** —— 前者 prefill 最强、decode 最弱，后者 decode 尚可、prefill 灾难；**两者跑在同一颗 Arc 140T 核显上**（§2.2），短板因此只能是**软件配置问题**（offload 策略 / 批处理参数 / 构建版本），不是硬件问题，都值得再调一轮。而 OVMS-CPU 提供了一把尺子：纯 CPU 跑 27B INT4 是 **2.5 tok/s** —— 它**比跑在核显上的 Bionic（1.91）还快**，说明在这台共享内存的机器上，把权重 offload 到核显并非天然占优，软件栈没调好时 iGPU 反而是负资产。
 
@@ -561,4 +562,3 @@ long,9458,——未完成：首轮即超时/连接中断，测试中断，无轮
 ```
 
 单位：TTFT / duration = 秒；ITL = 毫秒；cache = 命中率（0–1）。
-`itl_med` 在 Bionic / Herdsman 行量级为秒，OVMS / unsloth / OVMS-CPU 行为毫秒 —— 复核 llmbench 源码（`itl_median() * 1000`）后确认这是真实的攒批间隔，不是单位错误。

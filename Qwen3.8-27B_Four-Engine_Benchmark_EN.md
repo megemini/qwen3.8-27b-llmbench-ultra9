@@ -20,7 +20,7 @@ This run collected four metrics: **Dec TPS (pure decode throughput), ITL (inter-
 |---|---|---|
 | 1 | Herdsman's prefill reaches 3750 tok/s, the fastest of all | Its prompt tokens are **92–100% served from prefix cache** — this measures cache replay speed, not real compute |
 | 2 | Herdsman's UI says "Engine: llama.cpp" | The HTTP layer self-reports **ollama v0.6.4**; scheduling, caching and memory policy are all decided by ollama |
-| 3 | Bionic's prefill of 3172 tok/s is also #1 | This one is real (Cache% = 0), but the price is the worst decode and the choppiest output |
+| 3 | Bionic's prefill of 3172 tok/s is also #1 | This one is #1 in the real (cache-free) sense (Cache% = 0), but the price is the worst decode and the choppiest output |
 | 4 | Average decode speed differs by 2× across engines | Once ITL is factored in, the perceived gap doubles again: Bionic's ITL p95 reaches **1357 ms** |
 
 > Note: llmbench was later upgraded to add Cache% and ITL collection.
@@ -41,7 +41,7 @@ This run collected four metrics: **Dec TPS (pure decode throughput), ITL (inter-
 1. **Herdsman's prefill number is questionable.** `Cache%` shows its prompt tokens are **92.3% / 99.7% / 99.96% served from the server-side prefix cache** — meaning that pretty 3750 tok/s prefill (multi-run median, same below) measures "cache replay" rather than "real prefill compute". Every other engine reports 0% cache. This is consistent with the compute-ceiling check (roofline) in §10.1: for a dense 27B model it would need 202 TFLOPS (2×27B×3750 tok/s), whereas the Intel Arc 140T iGPU in this platform peaks at only 77 INT8 TOPS (≈19 TFLOPS FP32, Intel official spec), and the whole platform including CPU/NPU is just ~99 TOPS.
 2. **Only OVMS and Unsloth truly "stream".** ITL **mean/median** ratio: Unsloth 1.05, OVMS 1.09 (close to 1 = smooth); while **Bionic 1166, Herdsman 921** — the latter two accumulate a batch of tokens and flush them to the client at once, so it feels like "freeze for a moment, then a burst". Bionic's ITL p95 is as high as **1357 ms**.
 3. **Herdsman ran the whole test in an over-committed memory state.** Before startup it popped up its own warning: "estimated 43.5 GB required, 39.3 GB currently available, insufficient; continuing may cause startup failure and system crash". This explains why its long-context decode degrades by **-14.8%** (worst of the four).
-4. **OVMS's speed has a prerequisite: it must land on the accelerator.** The additional OVMS-CPU control group (explicitly pinned to CPU) shows: decode drops to 2.5 tok/s, prefill collapses to **5–6 tok/s (no batching)**, and the **long tier (9.46k tokens) did not complete (timed out during the first run, no run data)**. OVMS's 5 tok/s and 871 ms TTFT on the default device should be credited mainly to the accelerator — **verified: except for OVMS-CPU, all four groups (OVMS default / Bionic / Herdsman / Unsloth) run on the Arc 140T iGPU**.
+4. **OVMS's speed has a prerequisite: it must land on the accelerator.** The additional OVMS-CPU control group (explicitly pinned to CPU) shows: decode drops to 2.5 tok/s, prefill degrades to **5–6 tok/s in later runs (run 1 still ~1000 tok/s, see §6.5)**, and the **long tier (9.46k tokens) did not complete (timed out during the first run, no run data)**. OVMS's 5 tok/s and 871 ms TTFT on the default device should be credited mainly to the accelerator — **verified: except for OVMS-CPU, all four groups (OVMS default / Bionic / Herdsman / Unsloth) run on the Arc 140T iGPU**.
 
 ---
 
@@ -84,7 +84,7 @@ The output cap is fixed at 512 tokens — a workload that "wants a complete answ
 |---|---|---|
 | Concurrency | `c = 1` | Single-stream latency only |
 | Output cap | `t = 512` | |
-| Runs | `--runs 3` | Three runs executed **serially** (round by round via `asyncio.gather`). Definitions used in the body: **Dec TPS / prefill TPS are multi-run aggregates** (Dec uses `decode_throughput` — same source as `dec_tps` in the CSV, with no `_mean` suffix; prefill uses `prompt_throughput_median`, see §4.1 / §4.3), **TTFT uses the median**, supplemented by p95 |
+| Runs | `--runs 3` | Three runs executed **serially** (awaited round by round). Definitions used in the body: **Dec TPS / prefill TPS are multi-run aggregates** (Dec uses `decode_throughput` — same source as `dec_tps` in the CSV, with no `_mean` suffix; prefill uses `prompt_throughput_median`, see §4.1 / §4.3), **TTFT uses the median**, supplemented by p95 |
 | Sampling | `temperature = 1.0`, no fixed seed | Output length is not fixed |
 | Interface | OpenAI-compatible `/v1/chat/completions`, `stream = true` | Same for all four |
 
@@ -189,7 +189,7 @@ Besides the usual TTFT / throughput, this run also collected the following advan
 | OVMS-CPU | 5.4 | 5.7 | **not completed** | 0% |
 
 > 📌 **Definition note**: this table (and the whole body text) uniformly uses the **multi-run median** of `prompt_throughput` (the source code emits this field directly) — the most robust choice for OVMS / OVMS-CPU, which show "fast first run, degraded later runs". Appendix A pastes the CSV's **mean** values; the difference between the two is exactly the run-to-run jitter (see §7.6). Taking OVMS medium as an example, the mean of 931 tok/s is inflated by the 0.65 s first run, while the median is only 318.
-> ⭐ OVMS-CPU's prefill is only **~5–6 tok/s**, the same order of magnitude as its 2.5 tok/s decode (a healthy engine's prefill is usually tens of times its decode). This shows OVMS **does not batch prefill** on the CPU path; a long prompt needs thousands of steps per run and eventually times out.
+> ⭐ OVMS-CPU's prefill **median is only ~5–6 tok/s** (multi-run median), the same order of magnitude as its 2.5 tok/s decode (a healthy engine's prefill is usually tens of times its decode). But note: this median only reflects the **later runs** — its run-1 prefill actually reached ~1000 tok/s (medium tier: mean 358 = (1063 + 5.7 + 5.7) / 3, min_ttft only 1.26 s, see §7.6), showing the CPU path **still has batching capability on run 1 and degrades to ~5 tok/s from run 2 on**; the cause of the degradation is unverified. A long prompt at the degraded speed needs thousands of steps per run and eventually times out.
 
 ### 4.4 ITL (Inter-Token Latency)
 
@@ -238,7 +238,7 @@ Besides the usual TTFT / throughput, this run also collected the following advan
 
 > The diagonally hatched Herdsman bars mean **92–100% of prompt tokens come from the prefix cache** — cache replay rather than real compute, so they **do not participate in the ranking**.
 > Excluding it: Bionic has the fastest real prefill (3172 tok/s at the 9.46k tier), OVMS is second (1376), and Unsloth stays at 59 tok/s with no speed-up at all as prompts get longer.
-> ⭐ The near-zero-height OVMS-CPU bar (5–6 tok/s, × = long not completed) confirms that OVMS on CPU has **no batched prefill at all** — it is the only group with neither cache nor batching.
+> ⭐ The near-zero-height OVMS-CPU bar (multi-run median 5–6 tok/s, × = long not completed) reflects the degraded later runs: its run-1 prefill measured ~1000 tok/s (see §4.3 note and §7.6) — the CPU path still has batching capability on the first run, and degrades severely afterward; the cause is unverified.
 > 📌 Both the chart and the body text use the **multi-run median** of `prompt_throughput`; the CSV rows in Appendix A use the mean, and the difference comes from run-to-run jitter (§7.6).
 
 ### 5.5 Long-context stability
@@ -275,7 +275,7 @@ Besides the usual TTFT / throughput, this run also collected the following advan
 - **Long-prompt prefill is only 1376 tok/s** (multi-run median), 43% of Bionic (3172).
 - **TTFT fluctuates 7× across the three runs**: the long-prompt runs are **0.98 s / 6.93 s / 6.97 s**, with the first run clearly faster. `Cache% = 0` rules out prefix cache; but "fast first run" also appears in Bionic's / Herdsman's short tier and in OVMS-CPU, so it is not unique to OVMS (§7.6) — "KV block pool recycling / dynamic shape compile cache" therefore remains a **hypothesis to verify**, pending OVMS logs.
 - No speculative decoding / MTP, so the decode ceiling is locked by single-step forward latency.
-- Highest deployment barrier
+- Highest deployment barrier.
 
 ---
 
@@ -325,7 +325,7 @@ Besides the usual TTFT / throughput, this run also collected the following advan
 **Weaknesses / blockers**
 - ❌ **Prefill pinned at 59 tok/s, 23–54× slower**. TTFT for a 9.46k prompt is as high as **159.2 s** (2 min 39 s).
 - ❌ **Prefill throughput does not improve as prompts grow**: 53 / 78 / 59 (the other three are 23→3172 and 112→1376). This is the decisive fingerprint of **prefill not being batched**.
-- Suspected root cause: an outdated llama.cpp build, too small a ubatch size, or a fallback GEMM without VNNI/oneDNN enabled.
+- Suspected root cause: an outdated llama.cpp build, too small a ubatch size, or a degraded Vulkan kernel path (this group runs on the Vulkan iGPU).
 
 ---
 
@@ -343,7 +343,7 @@ Besides the usual TTFT / throughput, this run also collected the following advan
 
 **Conclusion 1: the CPU path wipes out every OVMS advantage.** decode falls from 5.0 to **2.5 tok/s** — note it is still **higher than Bionic's 1.91 on the iGPU**; short-prompt TTFT rises from 871 ms to **16.9 s** (about 19×); medium reaches **224 s** (about 55×).
 
-**Conclusion 2: the CPU path has no batched prefill.** On the default device, prefill speeds up sharply as prompts grow (112→1376 tok/s, multi-run median), showing tokens are fed to the GPU in batches; the CPU group stays flat at ~5 tok/s and does not improve at all as prompts grow (only about 1× faster than decode, whereas a healthy engine's prefill is usually tens of times its decode) — i.e. every prompt token is still processed one by one. At this rate a 9.46k long prompt would need **~30 minutes** to produce the first token; in the actual test the first run timed out (no run data left).
+**Conclusion 2: the CPU path's prefill still has batching capability on run 1, but later runs degrade severely.** On the default device, prefill speeds up sharply as prompts grow (112→1376 tok/s, multi-run median), showing tokens are fed to the GPU in batches; the CPU group's run 1 is the same (medium tier run-1 ~1063 tok/s with TTFT of only 1.26 s; short tier run-1 ~79 tok/s), showing batching still exists on CPU; but from run 2 on, prefill degrades to **~5–6 tok/s** (the multi-run median is dragged down to this level, only about 1× faster than decode, whereas a healthy engine's prefill is usually tens of times its decode) — the cause of the degradation (KV cache / memory / scheduling) is unverified. A 9.46k long prompt at the degraded speed would need **~30 minutes** per run to produce the first token; in the actual test the first run timed out (no run data left).
 
 **Conclusion 3: device choice = OVMS's lifeline, and no amount of parameter tuning can save that.** On the accelerated path (Arc 140T iGPU) the default device delivers 5 tok/s decode + batched prefill; pinned to CPU it drops to 2.5 tok/s. For OVMS, "which device it runs on" matters far more than "which parameters you tune".
 
@@ -408,7 +408,7 @@ This is the item with **the biggest impact on interactive experience** and the o
 
 ### 7.4 Prefix cache: Herdsman's "sweet trap"
 
-- llmbench first sends one probe request with the full prompt (`probe_tokens`), and Herdsman uses this to **hit the cache 100% from run 1**.
+- llmbench first sends one probe request with the full prompt (`probe_tokens`), and Herdsman uses this to **hit the cache from run 1 (92%+)**.
 - For real workloads: if the load is "long system prompt + multi-turn follow-ups", this cache is a **genuine, huge advantage**; if it is "a brand-new long document every time", it is of no use at all.
 - The other three all report Cache% = 0 — but note: **0% may mean caching is off, or may mean the server does not report the `prompt_tokens_details.cached_tokens` field**. Since Bionic's / Unsloth's TTFT shows no improvement across three runs, the former is more likely.
 - 🔍 **A consistent detail**: in all three tiers Herdsman misses exactly ~12 prompt tokens of cache per run (short: 156 − 144 = 12; medium: 3723 − 3711 = 12; long: 28254 − 28242 = 12, i.e. about 4 per run) — showing ollama **reuses a fixed prefix but always recomputes the trailing ~4 tokens**. That is why its hit rate never reaches 100% (99.96% on long), and why "92–100%" rather than "100%" is accurate in the body text.
@@ -436,6 +436,7 @@ After checking each group's "first-run TTFT" (older tool definition: `min_ttft` 
 
 - The most striking are OVMS / OVMS-CPU (6–178×), but **Bionic's and Herdsman's short tiers also show a faster first run (1.7–2.0×), while Bionic's medium tier has its first run as the slowest** — the direction is not consistent, showing this is **not a stable behavior unique to one engine**; it is more likely platform-level / scheduling-level incidental factors stacking up (iGPU driver throttling, shared memory bandwidth contention, etc.).
 - **Unsloth's three runs being identical** is strong evidence: jitter is unrelated to "whether batching/pooling is done".
+- The raw JSON of OVMS-CPU's medium tier shows a run-1 prefill of about **1063 tok/s** (TTFT of only 1.26 s), while the three-run mean is 358 / median 5.7 — i.e. "normal first run, degraded later runs" holds for prefill too, and even more extremely than the TTFT jitter (§6.5 Conclusion 2).
 
 ---
 
@@ -478,11 +479,11 @@ After checking each group's "first-run TTFT" (older tool definition: `min_ttft` 
 
 | Engine | Primary blocker | Secondary blocker | Fixable? |
 |---|---|---|---|
-| **OVMS** | Long-prompt prefill 1376 tok/s (43% of Bionic's, and dependent on iGPU offload) | TTFT jitter of 7× across runs (reproducible); no speculative decoding | 🟡 Prefill can improve via tuning; jitter needs a look at the KV block pool; ⚠️ falls off a cliff if the device falls back to CPU (§6.5) |
+| **OVMS** | Long-prompt prefill 1376 tok/s (43% of Bionic's, and dependent on iGPU offload) | TTFT jitter of 7× across runs (cause unverified, §7.6); no speculative decoding | 🟡 Prefill can improve via tuning; jitter needs a look at the KV block pool; ⚠️ falls off a cliff if the device falls back to CPU (§6.5) |
 | **Herdsman** | **Memory over-commit** (self-reported before startup: 43.5 GB needed / 39.3 GB available) | Prefill number includes a 92–100% cache benefit; batched output | 🟢 Already Q4_K_M (no need to change tier); a smaller quantization or more memory would improve it significantly |
 | **Bionic** | **iGPU Vulkan offload kills decode** (1.91 tok/s, slower than OVMS-CPU's 2.51 on pure CPU) | Batched output, ITL p95 1357 ms | 🟢 Unsloth on the same iGPU is 1.7–2.1× faster → this is a build/config problem: upgrading llama.cpp or adjusting the offload layer count (`-ngl`) would help |
 | **Unsloth** | **Prefill not batched (59 tok/s)** | Outdated llama.cpp build | 🟢 Upgrade the build and set `-b/-ub`; an order-of-magnitude improvement is expected |
-| **OVMS-CPU** ⭐ | **Running 27B on pure CPU: no batched prefill (5 tok/s) + halved decode** | Long tier not completed (timed out in the first run) | 🔴 Not a parameter problem: switching to the iGPU (default device) solves it, see §6.5 |
+| **OVMS-CPU** ⭐ | **Running 27B on pure CPU: prefill degrades to ~5 tok/s in later runs (run 1 ~1000) + halved decode** | Long tier not completed (timed out in the first run) | 🔴 Not a parameter problem: switching to the iGPU (default device) solves it, see §6.5 |
 
 ### Platform-level bottlenecks (engine-independent)
 
@@ -504,7 +505,7 @@ After checking each group's "first-run TTFT" (older tool definition: `min_ttft` 
 | **Not recommended for now** | **Bionic** | On this platform iGPU offload is a negative optimization: worst decode (1.91) + choppiest output; Unsloth on the same iGPU is 2× faster, and **even OVMS-CPU on pure CPU (2.51) beats it** |
 | **Avoid for long-prompt scenarios** | **Unsloth / OVMS-CPU** | Unsloth makes you wait 159 s for the first token; OVMS pinned to CPU cannot use the long tier (times out in the first run) |
 
-> ⚠️ All engines in the table above run on the **Arc 140T iGPU** by default (**verified**; only OVMS-CPU is the CPU-pinned control group). The OVMS-CPU control proves that once it falls back to CPU, decode halves, prefill collapses to 5–6 tok/s, and the long tier becomes unusable (§6.5). When deploying, still specify `target_device=GPU` explicitly to avoid an automatic fallback to CPU after a service restart.
+> ⚠️ All engines in the table above run on the **Arc 140T iGPU** by default (**verified**; only OVMS-CPU is the CPU-pinned control group). The OVMS-CPU control proves that once it falls back to CPU, decode halves, prefill degrades to 5–6 tok/s in later runs (run 1 ~1000), and the long tier becomes unusable (§6.5). When deploying, still specify `target_device=GPU` explicitly to avoid an automatic fallback to CPU after a service restart.
 
 ### End-to-end latency reference (generating 512 tokens)
 
@@ -520,7 +521,7 @@ After checking each group's "first-run TTFT" (older tool definition: `min_ttft` 
 
 **One-line summary**
 
-> **OVMS is the overall winner** — its decode is the fastest and most stable, its output the smoothest, and it is the only one breaking the 1-second barrier on short-prompt TTFT, all without any cache benefit. **But winning presupposes running on the Arc 140T iGPU**: pin it to CPU and decode halves, prefill collapses to 5–6 tok/s, and the long tier becomes unusable (§6.5).
+> **OVMS is the overall winner** — its decode is the fastest and most stable, its output the smoothest, and it is the only one breaking the 1-second barrier on short-prompt TTFT, all without any cache benefit. **But winning presupposes running on the Arc 140T iGPU**: pin it to CPU and decode halves, prefill degrades to 5–6 tok/s in later runs (run 1 ~1000), and the long tier becomes unusable (§6.5).
 > **Herdsman's numbers need to be taken with a discount** — the 92–100% prefix cache hit makes its prefill incomparable, and the memory over-commit at startup drags it down on long context; but for "fixed system prompt, multi-turn conversation" it is still the best choice.
 > **Bionic and Unsloth are two sides of the same mirror-image problem** — the former is strongest at prefill and weakest at decode, the latter decent at decode with a prefill disaster; **both run on the same Arc 140T iGPU** (§2.2), so their weaknesses can only be **software configuration problems** (offload strategy / batching parameters / build version), not hardware problems, and both deserve another tuning round. And OVMS-CPU provides a yardstick: pure CPU running 27B INT4 is **2.5 tok/s** — **faster than Bionic's 1.91 on the iGPU** — showing that on this shared-memory machine, offloading weights to the iGPU is not inherently advantageous; when the software stack is not tuned right, the iGPU is a liability rather than an asset.
 
@@ -561,6 +562,5 @@ long,9458,——not completed: the first run timed out / the connection dropped,
 ```
 
 Units: TTFT / duration in seconds; ITL in milliseconds; cache = hit rate (0–1).
-`itl_med` is on the order of seconds for the Bionic / Herdsman rows and milliseconds for the OVMS / Unsloth / OVMS-CPU rows — after checking the llmbench source (`itl_median() * 1000`), this is confirmed to be a real batching interval, not a unit error.
 
 
