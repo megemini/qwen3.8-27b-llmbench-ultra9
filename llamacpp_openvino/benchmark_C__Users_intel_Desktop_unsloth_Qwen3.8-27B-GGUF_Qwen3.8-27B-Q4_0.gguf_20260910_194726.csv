@@ -1,0 +1,29 @@
+# Test
+benchmark_id,206f4f34-3063-4484-84dc-fa6cc6ab6a23
+model_name,C:\Users\intel\Desktop\unsloth_Qwen3.8-27B-GGUF\Qwen3.8-27B-Q4_0.gguf
+network_latency_ms,1.3471
+timestamp,2026-09-10T19:47:26.811010
+config_base_url,http://127.0.0.1:8080/v1
+config_prompt_source,presets (short/medium/long)
+config_concurrency,1
+config_max_tokens,512
+config_runs,3
+config_no_verify_tls,False
+config_command,llmbench -u http://127.0.0.1:8080/v1 -c 1 -t 512 --runs 3
+# System
+Platform,Windows 11
+Python,3.13.15
+CPU,2900.0
+CPU cores,16
+Memory,63.5 GB (84% used)
+# Server
+server_framework,llama.cpp
+server_version,b10729-458681e1d
+server_model,C:\Users\intel\Desktop\unsloth_Qwen3.8-27B-GGUF\Qwen3.8-27B-Q4_0.gguf
+server_context_size,20480
+server_parallel_slots,1
+
+prompt_label,target_tokens,actual_tokens,concurrency,runs,generation_throughput_mean,generation_throughput_median,prompt_throughput_mean,decode_throughput_mean,min_ttft,ttft_mean,ttft_median,ttft_p95,itl_median_ms,itl_p95_ms,cached_tokens,cache_hit_ratio,success_rate_mean,duration,total_completion_tokens,total_prompt_tokens,peak_kv_cache_usage_perc,peak_num_requests_waiting
+short,10,92,1,3,2.0695,2.0598,136.9571,2.0752,0.6157,0.6759,0.7026,0.7095,480.4335,674.6440,264,0.9565,1.0000,250.0346,512,92,,
+medium,1000,1281,1,3,2.0564,2.0770,1971.1362,2.0618,0.6287,0.6516,0.6602,0.6661,476.7110,670.3675,3831,0.9969,1.0000,255.0829,512,1281,,
+long,10000,9458,1,3,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0,0.0000,0.0000,0.0000,0,0,,

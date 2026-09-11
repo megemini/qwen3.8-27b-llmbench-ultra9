@@ -33,15 +33,18 @@
 | 🥈 | **Herdsman** | 4.59 / 4.81 / 3.91 | 2.57 s ⚠️ | 679 ms | decode 快，但 TTFT 有 **92–100% prefix cache 红利**；启动前自报内存不足（超配运行），长上下文掉速 15% |
 | 🥉 | **Bionic** | 2.16 / 1.84 / 1.91 | **3.04 s** | **1357 ms** | **真实 prefill 最快（3172 tok/s）**，但 decode 最慢、输出最卡（1.36 s 才吐一批） |
 | 4 | **Unsloth** | 3.82 / 3.80 / 3.32 | **159.2 s** | 416 ms | **prefill 灾难**（59 tok/s，慢 23–54 倍）；但输出最平滑、decode 中规中矩 |
+| 5 | **llama.cpp (OpenVINO)** ⭐ | 2.08 / 2.06 / **未完成** | 660–703 ms ⚠️ | 675 ms | 核显上**最平滑的真流式**（ITL 中位≈均值≈480 ms）；但 decode 只有 ~2.1 tok/s，long 档因 OpenVINO 显存不足（502）失败 |
 
 > ⭐ 未上榜：**OVMS-CPU**（同一 OVMS 锁 CPU）。decode 2.5 tok/s、TTFT 中位数 17–224 s、long 档未完成（首轮即超时中断）——它与 OVMS 的差距全部来自设备选择，见 §6.5。
+> ⭐ 新追加：**llama.cpp (OpenVINO)**（`llamacpp_openvino/`，2026-09-10）——llama.cpp b10729 + OpenVINO 后端 + Q4_0，用于回答"核显上该用 Vulkan 还是 OpenVINO"，详见 §6.6。其 TTFT 之所以低（660–703 ms），是因为 **prefix cache 命中率高达 96–100%**（⚠️），并非真实 prefill 快。
 
 ### 最重要的发现
 
 1. **Herdsman 的 prefill 数字"含金量"存疑。** `Cache%` 显示它的 prompt token **92.3% / 99.7% / 99.96% 来自服务端 prefix cache** —— 也就是说它那漂亮的 3750 tok/s prefill（多轮中位数口径，下同），测的是"缓存回放"而非"真实 prefill 算力"。其余几家 cache 全为 0%。这与 §10.1 的算力上限校验（roofline）结论一致：按 dense 27B 计算它需要 202 TFLOPS（2×27B×3750 tok/s），而本平台 Intel Arc 140T 核显的 INT8 峰值只有 77 TOPS（≈19 TFLOPS FP32，Intel 官方 spec），平台含 CPU/NPU 合计也不过 ~99 TOPS。
-2. **只有 OVMS 和 unsloth 在真正"流式"输出。** ITL **均值/中位数**比值：unsloth 1.05、OVMS 1.09（接近 1 = 平滑）；而 **Bionic 1166、Herdsman 921** —— 后两者是把攒够一批 token 再一次性刷给客户端，实际体感是"卡一下、吐一串"。Bionic 的 ITL p95 高达 **1357 ms**。
+2. **真正"流式"输出的有 OVMS、Unsloth 与 llama.cpp (OpenVINO)。** ITL **均值/中位数**比值：llama.cpp-OpenVINO 1.00、unsloth 1.05、OVMS 1.09（接近 1 = 平滑）；而 **Bionic 1166、Herdsman 921** —— 后两者是把攒够一批 token 再一次性刷给客户端，实际体感是"卡一下、吐一串"。Bionic 的 ITL p95 高达 **1357 ms**。
 3. **Herdsman 在内存超配状态下跑完了全程。** 启动前它自己弹出告警："预估需要 43.5 GB，当前可用 39.3 GB，不足，继续可能导致启动失败和系统崩溃"。这解释了它为什么长上下文 decode 掉速 **-14.8%**（四家最差）。
-4. **OVMS 的快有前提：要命中加速设备。** 追加的 OVMS-CPU 对照（显式锁定 CPU）显示：decode 掉到 2.5 tok/s、prefill 后续轮次退化到 **5–6 tok/s（首轮仍有 ~1000 tok/s，见 §6.5）**、**long 档（9.46k token）未完成（首轮即超时中断，无轮次数据）**。OVMS 默认设备的 5 tok/s / 871 ms TTFT 应主要归功于加速设备 —— **已核实：除 OVMS-CPU 外，四组（OVMS 默认设备 / Bionic / Herdsman / Unsloth）全部运行在 Arc 140T 核显上**。
+4. **OVMS 的快有前提：要命中加速设备。** 追加的 OVMS-CPU 对照（显式锁定 CPU）显示：decode 掉到 2.5 tok/s、prefill 后续轮次退化到 **5–6 tok/s（首轮仍有 ~1000 tok/s，见 §6.5）**、**long 档（9.46k token）未完成（首轮即超时中断，无轮次数据）**。OVMS 默认设备的 5 tok/s / 871 ms TTFT 应主要归功于加速设备 —— **已核实：除 OVMS-CPU 外，五组（OVMS 默认设备 / Bionic / Herdsman / Unsloth / llama.cpp-OpenVINO）全部运行在 Arc 140T 核显上**。
+5. **同为核显、同为 llama.cpp，换个后端就能改变体验。** OpenVINO 后端的 llama.cpp（Q4_0）decode 为 2.06–2.08 tok/s，与 Vulkan 后端的 Bionic（1.91）同档、略快；更关键的是它的 **ITL 中位 ≈ 均值 ≈ 480 ms，是真正的逐 token 流式**，而 Bionic 在同一颗核显上是攒批输出（ITL p95 1357 ms）。代价是 **long 档直接失败**：OpenVINO 在 iGPU 上报 `CL_OUT_OF_RESOURCES` 与 `failed to compute graph`，请求以 502 中断 —— 这是"27B + iGPU 共享显存"容量瓶颈的首次显式暴露（§6.6）。
 
 ---
 
@@ -62,7 +65,7 @@
 
 所以这次测试的目的不是"跑个分"，而是回答三个具体问题：
 
-1. **在同一台机器、同一批权重上，四款引擎的真实解码速度差多少？**（用剔除 prefill 的 Dec TPS 衡量）
+1. **在同一台机器、同一批权重上，各款引擎的真实解码速度差多少？**（用剔除 prefill 的 Dec TPS 衡量）
 2. **长 prompt（9.4k token）场景下，谁会先撞墙？**（prefill 算力 vs KV cache 管理 vs 内存容量）
 3. **实际交互体验如何？**（首字延迟 TTFT + 输出是否平滑 ITL）
 
@@ -86,13 +89,13 @@
 | 输出上限 | `t = 512` | |
 | 重复轮数 | `--runs 3` | 三轮**串行**执行（逐轮 await）。正文取值口径：**Dec TPS / prefill TPS 为多轮聚合值**（Dec 取 `decode_throughput`——CSV 中 `dec_tps` 同源，无 `_mean` 后缀；prefill 取 `prompt_throughput_median`，见 §4.1 / §4.3），**TTFT 取中位数**并辅以 p95 |
 | 采样 | `temperature = 1.0`，未固定 seed | 输出长度不固定 |
-| 接口 | OpenAI 兼容 `/v1/chat/completions`，`stream = true` | 四家统一 |
+| 接口 | OpenAI 兼容 `/v1/chat/completions`，`stream = true` | 各家统一 |
 
 > ⚠️ **本次测试的边界**：只测了 `concurrency = 1`。主要是因为小机器的能力有限。
 
 ### 1.4 被测对象
 
-四款引擎都是 Windows 下的本地推理方案，但定位差异很大：
+这些引擎都是 Windows 下的本地推理方案，但定位差异很大：
 
 | 引擎 | 定位 | 本次扮演的角色 |
 |---|---|---|
@@ -100,6 +103,7 @@
 | **Herdsman**（牧马人 v0.5.4-beta1） | 国产本地模型管理与推理服务平台 | "带 MTP 的 GGUF + ollama 调度" |
 | **OVMS**（OpenVINO Model Server） | Intel 官方推理服务器，需转 IR + NNCF 量化 | "服务端化 + INT4 + 连续批处理" |
 | **Unsloth**（v0.1.804-beta） | 以量化 / 微调生态见长的桌面应用 | "自建 llama.cpp 构建" |
+| **llama.cpp (OpenVINO) ⭐**（b10729） | llama.cpp 官方构建 + OpenVINO 后端 | "同一个 llama.cpp，换后端跑核显" |
 
 ---
 
@@ -128,9 +132,13 @@
 | OVMS | `localhost:8000` | — | 未上报（OpenVINO Model Server） | `OpenVINO/Qwen3.8-27B-int4-ov` / INT4 (NNCF) | 14.8 GB | **Arc 140T 核显（GPU）** |
 | OVMS-CPU ⭐ | `localhost:8000` | — | 未上报（OpenVINO Model Server） | `OpenVINO/Qwen3.8-27B-int4-ov` / INT4 (NNCF)，**显式指定 CPU 设备** | 14.8 GB | **纯 CPU（唯一一组）** ❗ |
 | Unsloth | `127.0.0.1:8888` | GGUF inference engine / Vulkan | 未上报 | `Qwen3.8-27B-GGUF:Q4_K_M` | 16.2 GB | **Arc 140T 核显（GPU）** |
+| llama.cpp (OpenVINO) ⭐ | `127.0.0.1:8080` | llama.cpp（OpenVINO 后端） | **llama.cpp b10729-458681e1d** | `Qwen3.8-27B-Q4_0.gguf` / **GGUF Q4_0** | —（未记录） | **Arc 140T 核显（GPU）** |
 
-> 📌 **设备矩阵**：五组测试中**只有 OVMS-CPU 一组跑在纯 CPU**，其余四组（Bionic / Herdsman / OVMS / Unsloth）**全部运行在 Arc 140T 核显**上。
-> 这一点至关重要：它意味着**各家之间的性能差异不能归因于"有没有 GPU"**，而是同样一颗核显上的**引擎 / 后端实现与 offload 策略**差异（详见 §6.5、§9）。
+> 📌 **设备矩阵**：六组测试中**只有 OVMS-CPU 一组跑在纯 CPU**，其余五组（Bionic / Herdsman / OVMS / Unsloth / llama.cpp-OpenVINO）**全部运行在 Arc 140T 核显**上。
+> 这一点至关重要：它意味着**各家之间的性能差异不能归因于"有没有 GPU"**，而是同样一颗核显上的**引擎 / 后端实现与 offload 策略**差异（详见 §6.5、§6.6、§9）。
+
+> ⭐ **llama.cpp (OpenVINO) 是追加的一组对照测试**（`llamacpp_openvino/` 目录，2026-09-10）：用 llama.cpp 官方构建 **b10729**、后端换成 **OpenVINO**，加载同系列 GGUF（`Q4_0`）重测。
+> 它与 Bionic / Unsloth 构成一组"**同为 iGPU、同为 llama.cpp，但后端不同**"的对照（Vulkan vs OpenVINO），用来回答"核显上到底该用哪个后端"。注意其量化档位为 **Q4_0**，与其余各组的 Q4_K_M / INT4 略有差异（同为 4-bit 量级，仅作参考）。
 
 > ⭐ **OVMS-CPU 是追加的一组对照测试**（`ovms_cpu/` 目录，2026-09-09）：同一 OVMS 服务把推理设备**显式锁定为 CPU** 后重测。它与主表 OVMS 组的差异即"设备选择对 OVMS 的影响"——也是本报告第一次覆盖到的 OVMS CPU 路径真实性能。
 >
@@ -163,7 +171,9 @@
 | Unsloth | 3.82 | 3.80 | 3.32 | -13.1% |
 | OVMS-CPU | 2.60 | 2.51 | **未完成** ❌ | — |
 | Bionic | 2.16 | 1.84 | 1.91 | -11.6% |
+| llama.cpp (OpenVINO) ⭐ | 2.08 | 2.06 | **未完成** ❌ | — |
 
+> ⭐ **llama.cpp (OpenVINO)：decode 仅 2.06–2.08 tok/s，long 档失败**（OpenVINO 在 iGPU 上报 `CL_OUT_OF_RESOURCES`，请求以 502 中断）——详见 §6.6。
 > ⭐ **OVMS-CPU：显式指定 CPU 后 decode 只剩 ~2.5 tok/s**（约 OVMS 默认设备的一半），且 long（9.46k token）档**未完成（首轮即超时中断，无轮次数据留下）**——CPU 上的 OVMS 处理不了长 prompt（详见 §6.5）。
 
 ### 4.2 TTFT 中位数
@@ -175,6 +185,7 @@
 | Bionic | 4126 ms | **2704 ms** | **3039 ms** |
 | Unsloth | 1736 ms | 16344 ms | **159168 ms** |
 | OVMS-CPU | **16943 ms** ❌ | **224023 ms** ❌ | **未完成** ❌ |
+| llama.cpp (OpenVINO) ⭐ | 703 ms ⚠️ | 660 ms ⚠️ | **未完成** ❌ |
 
 ⚠️ = 该数值下 92–100% 的 prompt token 命中 prefix cache，非真实 prefill 耗时。
 ❌ OVMS-CPU 组 short / medium 的 TTFT 中位数比 OVMS 默认设备慢 **19× / 55×**；long 档未完成（首轮即超时中断）。
@@ -188,8 +199,11 @@
 | Herdsman | 14 ⚠️ | 587 ⚠️ | 3750 ⚠️ | **92% / 99.7% / 99.96%** |
 | Unsloth | 53 | 78 | **59** | 0% |
 | OVMS-CPU | 5.4 | 5.7 | **未完成** | 0% |
+| llama.cpp (OpenVINO) ⭐ | 131 ⚠️ | 1944 ⚠️ | **未完成** | **96% / 99.7%** |
 
 > 📌 **口径说明**：本表（及全文正文）统一为 `prompt_throughput` 的**多轮中位数**（源码直接输出该字段）——对"第 1 轮快、后续轮次退化"的 OVMS / OVMS-CPU 最稳健。附录 A 贴的是 CSV 的 **mean 口径**，两者差异即轮间抖动（见 §7.6）；以 OVMS medium 为例，mean 931 tok/s 是被首轮的 0.65 s 拉高，median 只有 318。
+> ⭐ **llama.cpp (OpenVINO) 的 prefill 是缓存回放**：其 Cache% 高达 96% / 99.7%（llama.cpp 默认启用 prompt cache），因此 131 / 1944 tok/s 同样**不参与真实 prefill 排名**；long 档未完成。
+
 > ⭐ OVMS-CPU 的 prefill **中位数只有 ~5–6 tok/s**（多轮中位数口径），与 decode 的 2.5 tok/s 同一数量级（健康引擎的 prefill 通常是 decode 的几十倍）。但需注意：这个中位数只反映**后续轮次**——其第 1 轮 prefill 实际达到 ~1000 tok/s（medium 档：mean 358 = (1063 + 5.7 + 5.7) / 3，min_ttft 仅 1.26 s，见 §7.6），说明 CPU 路径**首轮仍有批处理能力，从第 2 轮起退化到 ~5 tok/s**，退化原因待查；长 prompt 按退化后的速度每轮要跑几千步，最终超时未完成。
 
 ### 4.4 ITL（Inter-Token Latency）
@@ -201,10 +215,13 @@
 | Herdsman | 219 / 0.24 / 554 | 258 / 0.20 / 679 | ⚠️ **攒批突刺** |
 | Bionic | 470 / 0.40 / **1242** | 527 / 0.36 / **1357** | ❌ **严重攒批突刺** |
 | OVMS-CPU ⭐ | 405 / 384 / 545 | medium: 441 / 398 / 787（long 未完成） | ✅ 平滑（CPU 上仍逐 token 输出） |
+| llama.cpp (OpenVINO) ⭐ | 483 / 480 / 675 | medium: 486 / 477 / 670（long 未完成） | ✅ **平滑**（核显上真逐 token，~480 ms/token） |
 
 ---
 
 ## 5. 图表
+
+> 📌 本章 6 张图基于 **2026-09-08 / 09** 批次的数据绘制，**不含 2026-09-10 追加的 llama.cpp (OpenVINO) 组**（该组数据见 §4 各表、§6.6 与 §8.6 的截图）。
 
 ### 5.1 纯 decode 吞吐（已剔除 prefill）
 
@@ -364,6 +381,33 @@
 
 ---
 
+### 6.6 llama.cpp (OpenVINO) — 同一个 llama.cpp，换个后端跑核显
+
+**实现**：llama.cpp 官方构建 **b10729-458681e1d**，后端切换为 **OpenVINO**，加载 `Qwen3.8-27B-Q4_0.gguf`（GGUF **Q4_0**），context 20480、parallel slots 1，服务端在 `127.0.0.1:8080`。任务管理器显示 GPU 为 Arc 140T、共享显存占用约 10–12 GB / 36.2 GB，GPU 利用率出现明显尖峰 —— 确认走的是核显。
+
+**本组要回答的问题**：同为 iGPU、同为 llama.cpp，**Vulkan 后端（Bionic / Unsloth）与 OpenVINO 后端谁更好？**
+
+| 档位 | Dec TPS | TTFT 中位 | ITL 均值 / 中位 / p95 | Cache% | 状态 |
+|---|---:|---:|---|---:|---|
+| short (92) | 2.08 | 703 ms | 483 / 480 / 675 ms | 96% | ✅ |
+| medium (1.28k) | 2.06 | 660 ms | 486 / 477 / 670 ms | 99.7% | ✅ |
+| long (9.46k) | — | — | — | — | ❌ **失败（502）** |
+
+**优点**
+- ✅ **核显上最平滑的真流式**：ITL 中位（480 / 477 ms）≈ 均值（483 / 486 ms），比值 ≈ 1.0；换算 `1 / 2.06 ≈ 485 ms/token`，与实测完全吻合 —— 每个 token 都独立推送，没有攒批。相比之下，**同为核显**的 Bionic 是攒批输出（中位 0.36 ms、p95 1357 ms）。
+- decode **2.06–2.08 tok/s**，略高于 Vulkan 后端的 Bionic（1.91）。
+- TTFT 660–703 ms，数值很低——**但这是缓存红利**（Cache% 96–100%），不是真实 prefill 能力。
+
+**缺点 / 卡点**
+- ❌ **long 档直接失败（502）**：OpenVINO 在 iGPU 上抛 `CL_OUT_OF_RESOURCES`（显存不足），随后 `ggml_backend_openvino_graph_compute: failed to compute graph` 与 `failed to find free space in the KV cache`，第 1 轮请求即中断，无任何轮次数据。官方报错本身给出提示：Windows + Intel 核显可通过 Intel Graphics Software 提高 "Shared GPU Memory Override"（本机共享显存上限 36.2 GB、实际只用到 10–12 GB 仍触发 OOM，更像 OpenVINO/驱动的分配上限问题而非物理内存不足）。
+- ❌ **decode 仍只有 ~2.1 tok/s**：与 Bionic（1.91）、OVMS-CPU（2.51）同处"27B 单步前向"的成本区间。换后端改变的是**输出平滑度**与**显存行为**，不改变 decode 的量级。
+- ⚠️ **prefill 数字不可比**：96% / 99.7% 的 prompt token 命中 prefix cache（llama.cpp 默认开启 prompt cache），131 / 1944 tok/s 是**缓存回放**速度（§4.3）。
+- ⚠️ 量化档位为 **Q4_0**，与其余各组的 Q4_K_M / INT4 不完全一致，跨组比较时需留意。
+
+**结论：核显上 OpenVINO 后端的"体验"更好，但"容量"更脆。** 同样跑在 Arc 140T 上，OpenVINO 后端把 Bionic 那种攒批输出换成了真流式（ITL p95 从 1357 ms 降到 675 ms），decode 也略快；代价是它对显存更敏感——9.46k 的长 prompt 直接把它打崩。因此：**短/中 prompt 为主、看重输出手感**时，它是核显上比 Vulkan 更舒服的选择；**必须处理长上下文**时，应选 OVMS（OpenVINO Model Server，长 prompt prefill 1376 tok/s），而不是 llama.cpp 的 OpenVINO 后端。
+
+---
+
 ## 7. 关键差异归因
 
 ### 7.1 prefill：只在 cache=0 的三家之间比较才有意义
@@ -375,10 +419,12 @@
 | Unsloth | 53 | 78 | **59** | 0% | 完全无批处理 |
 | Herdsman | 14 | 587 | 3750 | **92–100%** | ⚠️ 缓存回放速度，不参与排名 |
 | OVMS-CPU ⭐ | 5.4 | 5.7 | **未完成** | 0% | 无批处理 + 纯 CPU，最差 |
+| llama.cpp (OpenVINO) ⭐ | 131 | 1944 | **未完成** | **96% / 99.7%** | ⚠️ 缓存回放；long 档因显存不足（502）失败 |
 
 - Bionic 在 medium/long 上领先 OVMS，靠的是 **Vulkan 后端成熟的 batched matmul**（iGPU 的强项恰好是批量矩阵运算）。
 - OVMS（默认设备）**已核实跑在 Arc 140T 核显**，获得 112→1376 tok/s 的批量 prefill（多轮中位数）；**而锁到 CPU（OVMS-CPU）后立刻掉到 5–6 tok/s**——证明这条曲线的"算力"来自设备而非引擎本身。
 - **unsloth 的 59 tok/s 且与长度无关**，是唯一真正的异常。
+- ⭐ **llama.cpp (OpenVINO) 的 131 → 1944 同样是缓存回放**（Cache% 96% / 99.7%），与 Herdsman 同类，**不参与排名**；且它的 long 档因 OpenVINO 显存不足（`CL_OUT_OF_RESOURCES`）直接失败（§6.6）。
 
 ### 7.2 decode：设备 + kernel 决定单步延迟
 
@@ -389,6 +435,7 @@
 | Unsloth | 3.32 | 0.68× | llama.cpp Vulkan 正常（**同跑核显**，非 CPU 路径） |
 | OVMS-CPU ⭐ | 未完成 | — | 同一 OVMS 锁 CPU 后仅 2.51（short/medium，long 首轮超时中断），解码全看设备 |
 | Bionic | 1.91 | **0.39×** | iGPU Vulkan 对 batch=1 decode 是**负优化**（**低于纯 CPU 的 OVMS-CPU 2.51**，负优化坐实） |
+| llama.cpp (OpenVINO) ⭐ | 未完成 | — | decode 2.06–2.08（short/medium；long 档因 OpenVINO 显存不足 502）。**同跑核显却是真流式** —— 说明"核显上只能攒批"不成立，后端实现才是关键 |
 
 > 📌 **MTP 的贡献无法从本次数据中分离**。Herdsman 标注为 "MTP-enabled"（投机解码），其 decode（4.59）比 unsloth（3.82）高 20%；但 **OVMS 完全没有 MTP 却拿到最高的 5.03**，说明后端差异足以解释这个差距。要定论必须做"开/关 MTP"的 A/B 对照。
 
@@ -400,6 +447,7 @@
 | OVMS | 1.09 | 平滑 | 每 ~200 ms 出一个字，稳定打字机 |
 | Herdsman | ~921 | 攒批 | 每 ~0.6 s 吐一批 |
 | Bionic | ~1166 | 攒批 | 每 ~1.36 s 吐一批，最卡 |
+| llama.cpp (OpenVINO) ⭐ | 1.00 | 平滑 | 每 ~480 ms 出一个字，**核显上也能做到真逐 token** |
 
 > 判据：平滑流式引擎的 ITL **均值/中位 ≈ 1**（unsloth 1.05、OVMS 1.09）；攒批引擎中位数被批内间隔拉到 ~0.2–0.4 ms，比值暴涨到 900–1200。
 
@@ -473,6 +521,20 @@
 
 > 显式锁定 CPU 后，TUI 只跑完了 short / medium 两档；long（9.46k token）**仅发出第 1 轮请求即报错中断**（图中状态栏出现 error），未能产生任何轮次数据——因此导出文件中没有 long 档条目，正文也一律表述为"未完成"。short / medium 的 TTFT 中位数仍分别恶化到 16.9 s / 224 s。
 
+### 8.6 llama.cpp (OpenVINO)：长 prompt 打崩显存的现场
+
+![llama.cpp OpenVINO 测试结果与报错](https://origin.picgo.net/2026/09/11/-2026-09-10-20180660a5ef7dd65a2555.png)
+
+> llmbench TUI：short 2.1 / medium 2.1 tok/s 正常完成，**long 档 0.0（未完成）**；右侧服务端窗口正在刷 OpenVINO 报错，随后请求以 502 结束。
+
+![OpenVINO CL_OUT_OF_RESOURCES 报错详情](https://origin.picgo.net/2026/09/11/-2026-09-10-201817793e4c5165d4f812.png)
+
+> 报错链：`ggml_backend_openvino_graph_compute_impl: compute failed with server -1` → `failed to compute graph: error status` → `[openvino] Exception: CL_OUT_OF_RESOURCES`，官方提示 Windows 核显可通过 Intel Graphics Software 提高 "Shared GPU Memory Override"；紧接着 `llama_decode: failed to decode, ret = -3`、`failed to find free space in the KV cache`。
+
+![llama.cpp OpenVINO 运行期 GPU 与共享显存占用](https://origin.picgo.net/2026/09/11/-2026-09-10-201825ac6ee4f84ad15f92.png)
+
+> 任务管理器：GPU 为 **Arc 140T**，共享显存占用约 10–12 GB / 36.2 GB，GPU 利用率出现周期性尖峰 —— 确认推理走的是核显；而 OOM 发生在显存远未触顶时，更像 OpenVINO/驱动的分配上限问题，而非物理显存不足。
+
 ---
 
 ## 9. 性能瓶颈与卡点清单
@@ -484,11 +546,13 @@
 | **Bionic** | **iGPU Vulkan offload 拖死 decode**（1.91 tok/s，比纯 CPU 的 OVMS-CPU 2.51 还慢） | 输出攒批，ITL p95 1357 ms | 🟢 同为核显的 Unsloth 快 1.7–2.1 倍 → 属构建/配置问题：升级 llama.cpp 或调整 offload 层数（`-ngl`）可改善 |
 | **Unsloth** | **prefill 无批处理（59 tok/s）** | llama.cpp 构建过旧 | 🟢 升级构建 + `-b/-ub` 参数，预期数量级改善 |
 | **OVMS-CPU** ⭐ | **纯 CPU 跑 27B：prefill 后续轮次退化至 ~5 tok/s（首轮 ~1000）+ decode 减半** | long 档未完成（首轮超时中断） | 🔴 非参数问题：改用核显（默认设备）即解决，见 §6.5 |
+| **llama.cpp (OpenVINO)** ⭐ | **long 档 502：OpenVINO 在 iGPU 上显存不足（`CL_OUT_OF_RESOURCES`）** | decode 仅 2.06–2.08 tok/s；prefill 数字含 96–100% 缓存红利 | 🟡 提高 "Shared GPU Memory Override" 或换回 Vulkan 后端可绕开；decode 量级受 27B 单步前向成本限制，换后端改变不了 |
 
 ### 平台级瓶颈（与引擎无关）
 
 1. **内存带宽锁死 decode 上限。** 27B 模型即便 INT4/Q4 也要 ~16 GB 权重，实测 3.3–5.0 tok/s 基本是这条曲线上的合理值。**想再快只能靠投机解码 / MTP，换引擎收益有限。**
-2. **设备不是分水岭，软件栈才是。** 本轮**只有 OVMS-CPU 跑在纯 CPU**，其余四组都在同一颗 Arc 140T 核显上（§2.2）。同一颗核显上 decode 从 **4.85（OVMS）到 1.91（Bionic）相差 2.6 倍**；而唯一的纯 CPU 组 **OVMS-CPU 2.51 tok/s 反而高于跑核显的 Bionic**。结论：在这台"共享内存 + 核显"的机器上，**offload 到 GPU 并不天然更快**——决定成败的是引擎 kernel 与批处理 / offload 配置（OpenVINO GPU plugin 优、llama.cpp Vulkan 差）。
+2. **设备不是分水岭，软件栈才是。** 本轮**只有 OVMS-CPU 跑在纯 CPU**，其余五组都在同一颗 Arc 140T 核显上（§2.2）。同一颗核显上 decode 从 **4.85（OVMS）到 1.91（Bionic）相差 2.6 倍**；而唯一的纯 CPU 组 **OVMS-CPU 2.51 tok/s 反而高于跑核显的 Bionic**。结论：在这台"共享内存 + 核显"的机器上，**offload 到 GPU 并不天然更快**——决定成败的是引擎 kernel 与批处理 / offload 配置（OpenVINO GPU plugin 优、llama.cpp Vulkan 差）。
+3. **核显的真正瓶颈是"显存分配"，不是"算力"。** 同为 Arc 140T：Bionic 输出攒批（ITL p95 1357 ms）、Unsloth prefill 无批处理（59 tok/s）、llama.cpp-OpenVINO 长 prompt 直接 OOM 失败（§6.6）、OVMS 则三档全通 —— 差异全部来自后端实现。换后端可以改变**输出平滑度**与**显存行为**（Vulkan → OpenVINO 后 ITL p95 从 1357 ms 降到 675 ms），但改变不了 27B 单步前向约 0.4–0.5 s/token 的成本量级。
 
 ---
 
@@ -501,11 +565,13 @@
 | **固定 system prompt + 多轮对话** | **Herdsman** | 92–100% prefix cache 命中是真实优势，TTFT 稳定 2.2–2.6 s |
 | **多并发服务**（需先补测） | **OVMS** | 唯一有 continuous batching + paged attention 的服务端方案 |
 | **看重输出流畅度** | **Unsloth ≈ OVMS** | ITL 中位数≈均值，真·打字机体验 |
+| **核显 · 只跑短/中 prompt，且看重流式手感** | **llama.cpp (OpenVINO)** ⭐ | ITL 中位≈均值≈480 ms 的**真流式**（比同核显的 Vulkan 后端 Bionic 平滑一倍以上），decode 2.1 略快；代价是长 prompt 会 OOM（§6.6） |
 | **短 prompt 为主、且愿意调优** | **Unsloth** | 修好 prefill 后 decode 3.8 + 最平滑输出，性价比高 |
 | **暂不推荐** | **Bionic** | 在本平台 iGPU offload 是负优化：decode 垫底（1.91）+ 输出最卡；同为核显的 Unsloth 快 2 倍，**纯 CPU 的 OVMS-CPU（2.51）都比它快** |
-| **长 prompt 场景避免** | **Unsloth / OVMS-CPU** | Unsloth 要等 159 s 才出第一个字；OVMS 锁 CPU 后 long 档不可用（首轮即超时中断） |
+| **长 prompt 场景避免** | **Unsloth / OVMS-CPU / llama.cpp (OpenVINO)** | Unsloth 要等 159 s 才出第一个字；OVMS 锁 CPU 后 long 档不可用（首轮即超时中断）；**llama.cpp (OpenVINO) 的 long 档直接 OOM 失败（502）** |
 
 > ⚠️ 上表中所有引擎默认都运行在**核显 Arc 140T** 上（**已核实**；唯 OVMS-CPU 为显式锁 CPU 的对照）。OVMS-CPU 对照证明：一旦回退到 CPU，decode 减半、prefill 后续轮次退化到 5–6 tok/s（首轮 ~1000）、long 档不可用（§6.5）。部署时仍建议显式指定 `target_device=GPU`，避免服务重启后被自动回退到 CPU。
+> 📌 **同为核显的部署取舍**：短/中 prompt 为主选 llama.cpp (OpenVINO)（流式手感最好），长上下文为主选 OVMS（prefill 1376 tok/s 且三档全通），两者都远好于 Bionic（§6.6）。
 
 ### 端到端耗时参考（生成 512 tokens）
 
@@ -518,12 +584,14 @@
 > 注 1：Herdsman 的 TTFT 含 prefix cache 红利，若缓存未命中需按其 prefill 能力重算。
 > 注 2：OVMS-CPU 未列入——long 档未完成（首轮即超时中断）；short / medium 端到端分别需 91 s / 205 s（单轮），仍是劣于 OVMS 默认设备的配置。
 > 注 3：本表为**估算口径**（TTFT 中位数 + 512 / Dec TPS），非实测轮次耗时。实测中 short 问答类请求往往**提前结束**（Bionic short 只生成 262 token、实测首轮耗时 124.2 s，远小于按 512 token 估算的 241 s），因此该列是高估的悲观值。
+> 注 4：**llama.cpp (OpenVINO) 未列入** —— long 档失败（502）；short / medium 实测耗时 250.0 s / 255.1 s（其 TTFT 低是缓存红利，decode 仅 ~2.1 tok/s）。
 
 **一句话总结**
 
 > **OVMS 是综合赢家** —— 它的 decode 最快、最稳、输出最平滑，短 prompt TTFT 唯一破 1 秒，且不靠任何缓存红利。**但赢的前提是跑在 Arc 140T 核显上**：显式锁 CPU 后 decode 减半、prefill 后续轮次退化到 5–6 tok/s（首轮 ~1000）、long 档不可用（§6.5）。
 > **Herdsman 的数字要打折扣看** —— 92–100% 的 prefix cache 命中让它的 prefill 数字失去可比性，而启动时的内存超配又在长上下文上把它拖了下来；但在"固定 system prompt 多轮对话"场景它依然是最优解。
 > **Bionic 和 Unsloth 是同一个镜像问题的两面** —— 前者 prefill 最强、decode 最弱，后者 decode 尚可、prefill 灾难；**两者跑在同一颗 Arc 140T 核显上**（§2.2），短板因此只能是**软件配置问题**（offload 策略 / 批处理参数 / 构建版本），不是硬件问题，都值得再调一轮。而 OVMS-CPU 提供了一把尺子：纯 CPU 跑 27B INT4 是 **2.5 tok/s** —— 它**比跑在核显上的 Bionic（1.91）还快**，说明在这台共享内存的机器上，把权重 offload 到核显并非天然占优，软件栈没调好时 iGPU 反而是负资产。
+> **llama.cpp (OpenVINO) 证明"换个后端就能换掉手感"。** 同一个 llama.cpp 跑在同一颗核显上，把 Vulkan 换成 OpenVINO 后，输出从攒批（ITL p95 1357 ms）变成真逐 token（675 ms），decode 也从 1.91 提到 2.06–2.08 —— 但 9.46k 长 prompt 会因 `CL_OUT_OF_RESOURCES` 直接失败（502）。**它和 Bionic 的对比说明：后端决定"体验"，但决定不了"量级"（27B 单步前向 ~0.5 s/token）与"容量"（长上下文显存）。**
 
 ---
 
@@ -559,6 +627,13 @@ label,tok,runs,gen_med,dec_tps,prompt_tps,ttft_med,ttft_p95,itl_mean,itl_med,itl
 short,92,3,2.2590,2.5997,29.67,16.9435,19.4817,405.37,383.71,544.99,0.0,91.43,239
 medium,1281,3,1.1963,2.5149,358.25,224.0229,225.6461,440.79,397.55,786.81,0.0,205.32,512
 long,9458,——未完成：首轮即超时/连接中断，测试中断，无轮次数据留下——
+
+# llama.cpp (OpenVINO)  (127.0.0.1:8080, Qwen3.8-27B-Q4_0.gguf, llama.cpp b10729-458681e1d, Cache 96% / 99.7%)
+label,tok,runs,gen_med,dec_tps,prompt_tps,ttft_med,ttft_p95,itl_mean,itl_med,itl_p95,cache,dur,compl
+short,92,3,2.0598,2.0752,136.96,0.7026,0.7095,482.89,480.43,674.64,0.9565,250.03,512
+medium,1281,3,2.0770,2.0618,1971.14,0.6602,0.6661,486.11,476.71,670.37,0.9969,255.08,512
+long,9458,——未完成：首轮即报错中断（OpenVINO CL_OUT_OF_RESOURCES，HTTP 502），无轮次数据留下——
 ```
 
 单位：TTFT / duration = 秒；ITL = 毫秒；cache = 命中率（0–1）。
+注：llama.cpp (OpenVINO) 组的 CSV 导出列结构与其余各组略有差异，上表已按统一列口径整理（`itl_mean` 取自 JSON 的 `itl_mean_ms`；`prompt_tps` 仍为 mean 口径）。
